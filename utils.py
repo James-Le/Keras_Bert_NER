@@ -1,110 +1,86 @@
-class PaddingInputExample(object):
-    
-class InputExample(object):
-    
-    def __init__(self, guid, text_a, text_b=None, labels=None):
+import numpy as np
+import keras
+from keras.utils import to_categorical
+from bert_serving.client import BertClient
+
+class DataGenerator(keras.utils.Sequence):
+    'Generates data for Keras'
+    def __init__(self, inps, tars, batch_size=64, max_len=10, shuffle=True, ip="localhost"):
+        'Initialization'
+        self.bc = BertClient(ip)
+        self.max_len = max_len
+        self.batch_size = batch_size
+        self.tars = tars
+        self.inps = inps
+        self.shuffle = shuffle
+        self.on_epoch_end()
+
+    def __len__(self):
+        'Denotes the number of batches per epoch'
+        return int(np.floor(len(self.inps) / self.batch_size))
+
+    def __getitem__(self, index):
+        'Generate one batch of data'
+        # Generate indexes of the batch
+        indexes = self.indexes[index*self.batch_size:(index+1)*self.batch_size]
+
+        list_inps_temp = [self.inps[k] for k in indexes]
         
-        self.guid = guid
-        self.text_a = text_a
-        self.text_b = text_b
-        self.labels = labels
+        list_tars_temp = [self.tars[k] for k in indexes]
 
-def create_tokenizer_from_hub_module():
-    """Get the vocab file and casing info from the Hub module."""
-    bert_module =  hub.Module(bert_path)
-    tokenization_info = bert_module(signature="tokenization_info", as_dict=True)
-    vocab_file, do_lower_case = sess.run(
-        [
-            tokenization_info["vocab_file"],
-            tokenization_info["do_lower_case"],
-        ]
-    )
-    return FullTokenizer(vocab_file=vocab_file, do_lower_case=do_lower_case)
+        # Generate data
+        X, Y = self.__data_generation(list_inps_temp, list_tars_temp)
 
-def convert_single_example(tokenizer, example, max_seq_length=50):
-    """Converts a single `InputExample` into a single `InputFeatures`."""
+        return X, Y
 
-    if isinstance(example, PaddingInputExample):
-        input_ids = [0] * max_seq_length
-        input_mask = [0] * max_seq_length
-        segment_ids = [0] * max_seq_length
-        labels = [tags["-PAD-"]] * max_seq_length
-        return input_ids, input_mask, segment_ids, labels
-
-    new_labels = copy.deepcopy(example.labels)
-    tokens_a = tokenizer.tokenize(example.text_a)
+    def on_epoch_end(self):
+        'Updates indexes after each epoch'
+        self.indexes = np.arange(len(self.inps))
+        if self.shuffle == True:
+            np.random.shuffle(self.indexes)
     
-    for idx, t in enumerate(tokens_a):
-        try:
-            dummy = new_labels[idx]
-        except IndexError as e:
-            new_labels.insert(idx, new_labels[idx-1])
-        if t[:2] == "##":
-            new_labels.insert(idx, new_labels[idx-1])        
+    def pad(self, batch, cate):
+        'pad or cut to max_len'
+        res = []
         
-    if len(tokens_a) > max_seq_length - 2:
-        tokens_a = tokens_a[0 : (max_seq_length - 2)]
-        new_labels = new_labels[0 : (max_seq_length - 2)]
+        if cate == "x":
+            pad = "."
+        else:
+            pad = 0
         
-    tokens = []
-    segment_ids = []
-    labels = []
-    tokens.append("[CLS]")
-    segment_ids.append(0)
-    labels.append(tag2idx["-PAD-"])
-    for i, token in enumerate(tokens_a):
-        tokens.append(token)
-        segment_ids.append(0)
-        labels.append(new_labels[i])
-    labels.append(tag2idx["-PAD-"])
-    tokens.append("[SEP]")
-    segment_ids.append(0)
-    
-    input_ids = tokenizer.convert_tokens_to_ids(tokens)
-    
-    input_mask = [1] * len(input_ids)
-    
-    while len(input_ids) < max_seq_length:
-        input_ids.append(0)
-        input_mask.append(0)
-        segment_ids.append(0)
+        for sample in batch:
+            if len(sample) < self.max_len:
+                res.append(sample + [pad] * (self.max_len - len(sample)))
+            else:
+                res.append(sample[:self.max_len])
+                
+        return res    
         
-    while len(labels) < max_seq_length:
-        labels.append(tag2idx["-PAD-"])
+    def __data_generation(self, list_inps_temp, list_tars_temp):
+        'Generates data containing batch_size samples'
+        # Initialization
+        X = np.empty((self.batch_size, self.max_len, 768), dtype=np.float64)
+        Y = np.empty((self.batch_size, self.max_len, 5), dtype=np.float64)
+
+#         # Generate data
+#         for i, x in enumerate(self.pad(list_inps_temp, "x")):
+#             np = x[0]
+#             if np == 0:
+#                 X[i,] = self.bc.encode(x[1:])
+#             else:
+#                 X[i,] = self.bc.encode(x[1:])
+
+#         for i, y in enumerate(self.pad(list_tars_temp, "y")):
+#             Y[i,] = to_categorical(y, 5)
         
-    assert len(input_ids) == max_seq_length
-    assert len(input_mask) == max_seq_length
-    assert len(segment_ids) == max_seq_length
-    assert len(labels) == max_seq_length
-    
-    return input_ids, input_mask, segment_ids, labels
+        # Generate data
+        for i, x in enumerate(list_inps_temp):
+            if len(x) >= self.max_len:
+                X[i,] = self.bc.encode(x)[:self.max_len]
+            else:
+                X[i,] = np.append(self.bc.encode(x), np.zeros((self.max_len-len(x), 768)), axis=0)
 
-def convert_examples_to_features(tokenizer, examples, max_seq_length=50):
-    """Convert a set of `InputExample`s to a list of `InputFeatures`."""
-
-    input_ids, input_masks, segment_ids, labels_arr, shapetags_arr = [], [], [], [], []
-    for example in tqdm_notebook(examples, desc="Converting examples to features"):
-        input_id, input_mask, segment_id, labels = convert_single_example(
-            tokenizer, example, max_seq_length
-        )
-        input_ids.append(input_id)
-        input_masks.append(input_mask)
-        segment_ids.append(segment_id)
-        labels_arr.append(labels)
-    return (
-        np.array(input_ids),
-        np.array(input_masks),
-        np.array(segment_ids),
-        np.array([to_categorical(i, num_classes=n_tags) for i in labels_arr]),
-    )
-
-def convert_text_to_examples(texts, labels_arr):
-    """Create InputExamples"""
-    InputExamples = []
-    for text, labels in zip(texts, labels_arr):
-        InputExamples.append(
-            InputExample(guid=None, text_a=" ".join(text), text_b=None,
-                         labels=" ".join(labels))
-        )
-    return InputExamples
-
+        for i, y in enumerate(self.pad(list_tars_temp, "y")):
+            Y[i,] = to_categorical(y, 5)
+        
+        return X, Y

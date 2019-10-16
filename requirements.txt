@@ -1,0 +1,6 @@
+bert-serving-server
+bert-serving-client
+keras_contrib
+tqdm
+
+// Please run "bert-serving-start -model_dir cased_L-12_H-768_A-12/" at first.
